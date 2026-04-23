@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import HistoryPanel from './HistoryPanel';
 import { saveToHistory } from '../utils/historyManager';
+import { useSessionState } from '../hooks/useSessionState';
 
 const INDICES = [
   'BSE SENSEX','NIFTY 50','NIFTY 100','NIFTY MIDCAP 100',
@@ -27,7 +28,6 @@ const LOADING_MSGS = [
   '🎯 Computing trade setups...',
   '✅ Running confirmation checklist...',
   '⚖️ Generating final verdict...',
-  '💾 Saving to history...',
 ];
 
 function TypewriterText({ text, speed = 5 }) {
@@ -62,8 +62,7 @@ function RatingBadge({ rating }) {
   );
 }
 
-function AnalysisDisplay({ analysisText, stock, index }) {
-  const [activeSection, setActiveSection] = useState(0);
+function AnalysisDisplay({ analysisText, stock, index, activeSection, setActiveSection }) {
   const parts = analysisText.split(/(?=## STEP)/i).filter(Boolean);
   const ratingMatch = analysisText.match(/Strong Buy|Buy|Hold|Avoid|Sell/i);
 
@@ -90,7 +89,10 @@ function AnalysisDisplay({ analysisText, stock, index }) {
       </div>
       <div style={{ flex: 1, overflowY: 'auto', padding: '18px 22px' }}>
         <div style={{ fontFamily: "'Courier New', monospace", fontSize: '0.8em', lineHeight: 1.85, color: '#c8e8d0', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-          <TypewriterText text={parts[activeSection] || analysisText} speed={2} />
+          {parts[activeSection]
+            ? <TypewriterText text={parts[activeSection]} speed={2} key={`${stock}-${activeSection}`} />
+            : <TypewriterText text={analysisText} speed={2} key={stock} />
+          }
         </div>
       </div>
     </div>
@@ -98,31 +100,42 @@ function AnalysisDisplay({ analysisText, stock, index }) {
 }
 
 export default function StockAnalyzer() {
-  const [step, setStep]                   = useState('input');
-  const [stock, setStock]                 = useState('');
-  const [selectedIndex, setSelectedIndex] = useState('');
-  const [timeframe, setTimeframe]         = useState(TIMEFRAMES[2]);
-  const [analysis, setAnalysis]           = useState('');
-  const [error, setError]                 = useState('');
-  const [loadingMsg, setLoadingMsg]       = useState('');
-  const [showHistory, setShowHistory]     = useState(false);
-  const [savedMsg, setSavedMsg]           = useState('');
+  // ── Persisted state — survives tab switches ───────────────────────────────
+  const [results, setResults]           = useSessionState('sri_stock_results', []);      // last 3 analyses
+  const [activeResultIdx, setActiveResultIdx] = useSessionState('sri_stock_active_idx', null); // which result showing
+  const [stock, setStock]               = useSessionState('sri_stock_input', '');
+  const [selectedIndex, setSelectedIndex] = useSessionState('sri_stock_index', '');
+  const [timeframe, setTimeframe]       = useSessionState('sri_stock_timeframe', 'Both');
+  const [activeSection, setActiveSection] = useSessionState('sri_stock_section', 0);
+  const [showHistory, setShowHistory]   = useSessionState('sri_stock_show_history', false);
+
+  // ── Local state — not persisted ───────────────────────────────────────────
+  const [loading, setLoading]   = useState(false);
+  const [error, setError]       = useState('');
+  const [loadingMsg, setLoadingMsg] = useState('');
+  const [savedMsg, setSavedMsg] = useState('');
   const inputRef = useRef();
 
-  useEffect(() => { if (step === 'input' && inputRef.current) inputRef.current.focus(); }, [step]);
+  const currentResult = activeResultIdx !== null ? results[activeResultIdx] : null;
 
   function loadFromHistory(entry) {
-    setStock(entry.stock);
-    setSelectedIndex(entry.index);
-    setTimeframe(entry.timeframe);
-    setAnalysis(entry.analysisText);
-    setStep('result');
+    const newResult = { stock: entry.stock, index: entry.index, timeframe: entry.timeframe, analysis: entry.analysisText, savedAt: entry.date };
+    addResult(newResult);
     setShowHistory(false);
+  }
+
+  function addResult(newResult) {
+    setResults(prev => {
+      const updated = [newResult, ...prev].slice(0, 3); // keep last 3
+      return updated;
+    });
+    setActiveResultIdx(0);
+    setActiveSection(0);
   }
 
   async function runAnalysis() {
     if (!stock.trim()) return;
-    setStep('loading'); setError(''); setAnalysis('');
+    setLoading(true); setError('');
     let mi = 0; setLoadingMsg(LOADING_MSGS[0]);
     const iv = setInterval(() => {
       mi = (mi + 1) % LOADING_MSGS.length;
@@ -156,24 +169,17 @@ Moving Averages:
 - 50 SMA: ₹[value] → Price [above/below]
 - 200 SMA: ₹[value] → Price [above/below]
 - Signal: [Golden Cross/Death Cross/Neutral]
-
 RSI (14): [value] → [Overbought/Oversold/Neutral]
 - Divergence: [Bullish/Bearish/None]
-
 MACD (12,26,9):
 - MACD: [value] | Signal: [value] | Histogram: [Expanding/Contracting]
 - Crossover: [Bullish/Bearish/Neutral]
-
 Stochastic: %K=[value] %D=[value] → [status]
-
 Volume:
 - Avg Volume: [value] | Recent: [expanding/contracting]
 - OBV: [Bullish confirmation/Bearish divergence]
-
 Fibonacci (Swing High ₹[h] → Swing Low ₹[l]):
-- 38.2%: ₹[value]
-- 50.0%: ₹[value]
-- 61.8%: ₹[value]
+- 38.2%: ₹[value] | 50.0%: ₹[value] | 61.8%: ₹[value]
 - Current zone: [describe]
 
 ## STEP 3: 🕯️ PRICE ACTION & PATTERNS
@@ -198,7 +204,6 @@ SHORT-TERM SETUP:
 - Stop-Loss: ₹[sl]
 - Risk:Reward = 1:[X]
 - Duration: [X days/weeks]
-
 LONG-TERM INVESTMENT VIEW:
 - Trend Strength: [Strong/Moderate/Weak]
 - Accumulation Zone: ₹[low] to ₹[high]
@@ -224,85 +229,88 @@ Confirmed: [X/7] | Trade Go/No-Go: [YES if ≥4 / NO]
 - Invalidation: [list]
 - Index Context (Nifty/Sensex): [current trend & impact]
 
-⚠️ DISCLAIMER: Technical analysis for educational purposes only. Not financial advice. Consult a SEBI-registered advisor before investing.`;
+⚠️ DISCLAIMER: Technical analysis for educational purposes only. Not financial advice.`;
 
       const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
       const response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-          'anthropic-dangerous-direct-browser-access': 'true'
-        },
+        headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
         body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 4000,
+          model: 'claude-sonnet-4-20250514', max_tokens: 4000,
           tools: [{ type: 'web_search_20250305', name: 'web_search' }],
           messages: [{ role: 'user', content: prompt }]
         })
       });
-
       const data = await response.json();
       clearInterval(iv);
-      if (data.error) { setError(data.error.message); setStep('input'); return; }
+      if (data.error) { setError(data.error.message); setLoading(false); return; }
 
       const text = data.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
-
-      // ── AUTO-SAVE TO HISTORY ─────────────────────────────────────────────
       saveToHistory(stock.trim(), selectedIndex, timeframe, text);
-      setSavedMsg('✅ Saved to history + files downloaded');
-      setTimeout(() => setSavedMsg(''), 4000);
-
-      setAnalysis(text);
-      setStep('result');
+      setSavedMsg('✅ Saved'); setTimeout(() => setSavedMsg(''), 3000);
+      addResult({ stock: stock.trim().toUpperCase(), index: selectedIndex, timeframe, analysis: text, savedAt: new Date().toLocaleString('en-IN') });
     } catch (err) {
       clearInterval(iv);
       setError('Analysis failed: ' + err.message);
-      setStep('input');
     }
+    setLoading(false);
   }
+
+  const showInput = !currentResult && !loading;
+  const showResult = !!currentResult && !loading;
 
   return (
     <div style={{ display: 'flex', height: 'calc(100vh - 52px)' }}>
 
-      {/* ── History Sidebar ───────────────────────────────────────────────── */}
-      <div style={{
-        width: showHistory ? 280 : 0, flexShrink: 0,
-        background: '#060e07',
-        borderRight: showHistory ? '1px solid #1a2e1f' : 'none',
-        overflow: 'hidden', transition: 'width 0.25s ease'
-      }}>
+      {/* History Sidebar */}
+      <div style={{ width: showHistory ? 280 : 0, flexShrink: 0, background: '#060e07', borderRight: showHistory ? '1px solid #1a2e1f' : 'none', overflow: 'hidden', transition: 'width 0.25s ease' }}>
         {showHistory && <HistoryPanel onLoadAnalysis={loadFromHistory} />}
       </div>
 
-      {/* ── Main ─────────────────────────────────────────────────────────── */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
-        {/* Topbar */}
+        {/* Top bar */}
         <div style={{ background: '#050d07', borderBottom: '1px solid #0d2016', padding: '6px 16px', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
           <button onClick={() => setShowHistory(!showHistory)}
             style={{ background: showHistory ? '#0d2016' : 'transparent', border: `1px solid ${showHistory ? '#00ff88' : '#1a3d24'}`, color: showHistory ? '#00ff88' : '#4a7a55', padding: '4px 14px', fontSize: '0.72em', cursor: 'pointer', fontFamily: 'inherit', borderRadius: 2 }}>
             {showHistory ? '◀ Hide History' : '📋 History'}
           </button>
-          {savedMsg && <span style={{ color: '#00ff88', fontSize: '0.72em' }}>{savedMsg}</span>}
+
+          {/* Last 3 results tabs */}
+          {results.length > 0 && (
+            <div style={{ display: 'flex', gap: 5, marginLeft: 8 }}>
+              {results.map((r, i) => (
+                <button key={i} onClick={() => { setActiveResultIdx(i); setActiveSection(0); }}
+                  style={{ padding: '3px 12px', fontSize: '0.7em', background: activeResultIdx === i ? '#0d2016' : 'transparent', border: `1px solid ${activeResultIdx === i ? '#00ff88' : '#1a3d24'}`, color: activeResultIdx === i ? '#00ff88' : '#4a7a55', cursor: 'pointer', fontFamily: 'inherit', borderRadius: 2 }}>
+                  {r.stock}
+                </button>
+              ))}
+              <button onClick={() => setActiveResultIdx(null)}
+                style={{ padding: '3px 10px', fontSize: '0.7em', background: 'transparent', border: '1px solid #1a3d24', color: '#4a7a55', cursor: 'pointer', fontFamily: 'inherit', borderRadius: 2 }}>
+                + New
+              </button>
+            </div>
+          )}
+
+          {savedMsg && <span style={{ color: '#00ff88', fontSize: '0.72em', marginLeft: 'auto' }}>{savedMsg}</span>}
         </div>
 
-        {step === 'input' && (
+        {/* Input form */}
+        {showInput && (
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px', overflowY: 'auto' }}>
             <div style={{ maxWidth: 620, width: '100%' }} className="fade-in">
               <div style={{ background: '#0a1a0e', border: '1px solid #1a3d24', borderRadius: '4px 4px 0 0', padding: '8px 14px', display: 'flex', gap: 7, alignItems: 'center' }}>
                 {['#ff5f56','#ffbd2e','#27c93f'].map((c,i) => <div key={i} style={{ width: 10, height: 10, borderRadius: '50%', background: c }} />)}
-                <span style={{ color: '#2a5a35', fontSize: '0.72em', marginLeft: 8 }}>stock_analyzer.sh</span>
+                <span style={{ color: '#2a5a35', fontSize: '0.72em', marginLeft: 8 }}>stock_analyzer.sh — state preserved across tabs</span>
               </div>
               <div style={{ background: '#050d07', border: '1px solid #1a3d24', borderTop: 'none', borderRadius: '0 0 4px 4px', padding: '26px 24px' }}>
-                <div style={{ marginBottom: 22 }}>
-                  <div style={{ color: '#00ff88', fontSize: '0.72em', letterSpacing: '0.1em', marginBottom: 6 }}>$ ./analyze --market india --mode full --history auto</div>
+                <div style={{ marginBottom: 20 }}>
+                  <div style={{ color: '#00ff88', fontSize: '0.72em', letterSpacing: '0.1em', marginBottom: 6 }}>$ ./analyze --market india --mode full --persist session</div>
                   <div style={{ color: '#00ff88', fontSize: '1.2em', fontWeight: 700 }}>Stock Technical Analyzer</div>
-                  <div style={{ color: '#4a7a55', fontSize: '0.76em', marginTop: 4 }}>7-Step Deep Analysis · Auto-saves JSON + Markdown to disk</div>
+                  <div style={{ color: '#4a7a55', fontSize: '0.76em', marginTop: 4 }}>7-Step Analysis · Last 3 results remembered · Returns to where you left off</div>
                 </div>
 
-                <div style={{ marginBottom: 13 }}>
+                <div style={{ marginBottom: 12 }}>
                   <label style={{ display: 'block', color: '#4a7a55', fontSize: '0.67em', letterSpacing: '0.1em', marginBottom: 5 }}>STOCK NAME OR SYMBOL</label>
                   <div style={{ display: 'flex', alignItems: 'center', background: '#0a1a0e', border: '1px solid #1a3d24', borderRadius: 3, padding: '0 12px' }}>
                     <span style={{ color: '#00ff88', marginRight: 8 }}>$</span>
@@ -312,7 +320,7 @@ Confirmed: [X/7] | Trade Go/No-Go: [YES if ≥4 / NO]
                   </div>
                 </div>
 
-                <div style={{ marginBottom: 13 }}>
+                <div style={{ marginBottom: 12 }}>
                   <label style={{ display: 'block', color: '#4a7a55', fontSize: '0.67em', letterSpacing: '0.1em', marginBottom: 5 }}>INDEX (OPTIONAL)</label>
                   <select value={selectedIndex} onChange={e => setSelectedIndex(e.target.value)}
                     style={{ width: '100%', background: '#0a1a0e', border: '1px solid #1a3d24', color: '#c8e8d0', padding: '9px 12px', fontSize: '0.82em', fontFamily: 'inherit', borderRadius: 3, outline: 'none' }}>
@@ -341,7 +349,8 @@ Confirmed: [X/7] | Trade Go/No-Go: [YES if ≥4 / NO]
           </div>
         )}
 
-        {step === 'loading' && (
+        {/* Loading */}
+        {loading && (
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }} className="fade-in">
             <div style={{ width: 48, height: 48, border: '2px solid #0d2016', borderTop: '2px solid #00ff88', borderRadius: '50%', marginBottom: 22 }} className="spin" />
             <div style={{ color: '#00ff88', fontSize: '0.9em', fontWeight: 700, marginBottom: 6 }}>Analyzing: {stock.toUpperCase()}</div>
@@ -349,28 +358,36 @@ Confirmed: [X/7] | Trade Go/No-Go: [YES if ≥4 / NO]
           </div>
         )}
 
-        {step === 'result' && analysis && (
+        {/* Result */}
+        {showResult && (
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }} className="fade-in">
             <div style={{ background: '#050d07', borderBottom: '1px solid #0d2016', padding: '7px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
               <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-                <span style={{ color: '#00ff88', fontWeight: 700 }}>{stock.toUpperCase()}</span>
-                {selectedIndex && <span style={{ color: '#4a7a55', fontSize: '0.78em' }}>{selectedIndex}</span>}
-                <span style={{ color: '#00ff44', fontSize: '0.68em' }}>💾 Saved to history</span>
+                <span style={{ color: '#00ff88', fontWeight: 700 }}>{currentResult.stock}</span>
+                {currentResult.index && <span style={{ color: '#4a7a55', fontSize: '0.78em' }}>{currentResult.index}</span>}
+                <span style={{ color: '#00ff44', fontSize: '0.68em' }}>💾 Saved</span>
+                <span style={{ color: '#2a5a35', fontSize: '0.65em' }}>{currentResult.savedAt}</span>
               </div>
               <div style={{ display: 'flex', gap: 7 }}>
-                <button onClick={() => { setStep('input'); setAnalysis(''); }}
-                  style={{ background: 'transparent', border: '1px solid #1a3d24', color: '#4a7a55', padding: '4px 13px', fontSize: '0.72em', cursor: 'pointer', fontFamily: 'inherit', borderRadius: 2 }}>← New</button>
+                <button onClick={() => setActiveResultIdx(null)}
+                  style={{ background: 'transparent', border: '1px solid #1a3d24', color: '#4a7a55', padding: '4px 13px', fontSize: '0.72em', cursor: 'pointer', fontFamily: 'inherit', borderRadius: 2 }}>+ New Search</button>
                 <button onClick={() => {
-                  const blob = new Blob([analysis], { type: 'text/plain' });
+                  const blob = new Blob([currentResult.analysis], { type: 'text/plain' });
                   const url = URL.createObjectURL(blob);
                   const a = document.createElement('a'); a.href = url;
-                  a.download = `${stock.toUpperCase()}_analysis.txt`; a.click();
+                  a.download = `${currentResult.stock}_analysis.txt`; a.click();
                 }}
                   style={{ background: 'transparent', border: '1px solid #1a3d24', color: '#4a7a55', padding: '4px 13px', fontSize: '0.72em', cursor: 'pointer', fontFamily: 'inherit', borderRadius: 2 }}>⬇ Export</button>
               </div>
             </div>
             <div style={{ flex: 1, overflow: 'hidden' }}>
-              <AnalysisDisplay analysisText={analysis} stock={stock.toUpperCase()} index={selectedIndex} />
+              <AnalysisDisplay
+                analysisText={currentResult.analysis}
+                stock={currentResult.stock}
+                index={currentResult.index}
+                activeSection={activeSection}
+                setActiveSection={setActiveSection}
+              />
             </div>
           </div>
         )}
